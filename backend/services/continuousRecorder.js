@@ -319,8 +319,7 @@ function stop(cameraId) {
 
   active.delete(id);
   console.log(`[recorder] stopped ${id}`);
-  // One last sweep, after the grace period, so the just-finalised segment is indexed.
-  setTimeout(() => { indexOnce().catch(() => {}); }, 9000);
+  sweepAfterStop();
   if (active.size === 0) stopIndexer();
   return { stopped: true };
 }
@@ -430,6 +429,30 @@ async function indexOnce() {
   }
   if (indexed) console.log(`[recorder] indexed ${indexed} segment(s)`);
   return { indexed };
+}
+
+// After a recorder stops, ffmpeg still has to finalise the MP4 and append its
+// row to the segment CSV, and indexOnce() deliberately ignores a trailing line
+// that has no newline yet. A single delayed sweep therefore lost the race
+// whenever finalising ran long: the periodic indexer had already been stopped,
+// so that last segment stayed unindexed until the next recording started — the
+// clip you just made simply never showed up. Sweeping repeatedly for a while
+// closes the window without keeping the indexer alive indefinitely.
+const POST_STOP_SWEEP_MS = 2000;
+const POST_STOP_SWEEPS = 15; // 30s of cover
+let postStopTimer = null;
+
+function sweepAfterStop() {
+  if (postStopTimer) clearInterval(postStopTimer);
+  let n = 0;
+  postStopTimer = setInterval(() => {
+    n += 1;
+    indexOnce().catch(() => {});
+    if (n >= POST_STOP_SWEEPS) {
+      clearInterval(postStopTimer);
+      postStopTimer = null;
+    }
+  }, POST_STOP_SWEEP_MS);
 }
 
 function startIndexer() {
