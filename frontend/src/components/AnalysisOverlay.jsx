@@ -32,8 +32,8 @@ export default function AnalysisOverlay({ analysis, imgWidth, imgHeight, natural
     boxes.push({ ...lp.bbox, label: lp.plateNumber, color: COLORS.plate, key: `lp${i}` });
   });
   // Faces are drawn last so they sit on top of the person box that contains them.
-  // A stranger gets a thicker, dashed red box so it reads as an alert at a glance,
-  // while a recognised face is a calm solid green box carrying the person's name.
+  // An unrecognised face is a dashed red box so it reads as an alert at a glance;
+  // a recognised one is a calm solid green box carrying the person's name.
   (analysis.faces || []).forEach((f, i) => {
     if (!f.bbox) return;
     boxes.push({

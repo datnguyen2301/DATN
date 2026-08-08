@@ -935,9 +935,9 @@ async function processFaces(cameraId, state, camera, result) {
   if (rawFaces.length === 0) return; // no face seen — nothing can be judged
   try {
     const { annotateAnalysis } = require('./faceMatch');
-    const { faces, knownNames, enrolled, hasStranger, strangerPersons } =
+    // annotateAnalysis writes the annotated faces back into result.analysis.
+    const { knownNames, enrolled, hasStranger, strangerPersons } =
       await annotateAnalysis(result.analysis);
-    result.analysis.faces = faces;
     if (!enrolled) return; // nobody enrolled yet — everyone would be a "stranger"
 
     const now = Date.now();
