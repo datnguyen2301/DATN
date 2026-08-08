@@ -7,9 +7,18 @@ import json
 import os
 import sys
 import threading
+from dotenv import load_dotenv
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
 from functools import partial
+
+# Load .env the same way ezviz_server.py does. Without this, launching the server
+# by hand ("python scripts/analyze_server.py") ignored FACE_MIN_PX and
+# FACE_SCORE_THRESHOLD and fell back to defaults that filter out every face at
+# this camera's distance — stranger alerting then stopped firing with no error.
+# Must run before the os.environ reads below; on Windows "spawn" each worker
+# re-imports this module, so workers pick the values up too.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'))
 
 # ── CPU tuning ───────────────────────────────────────────────────────────────
 # With a ProcessPoolExecutor of N workers, PyTorch/OpenMP/BLAS each default to

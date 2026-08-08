@@ -924,46 +924,21 @@ const STRANGER_ALERT_COOLDOWN_MS = parseInt(process.env.STRANGER_ALERT_COOLDOWN_
 // want one greeting, but if Mẹ then arrives she still gets announced.
 const KNOWN_ALERT_COOLDOWN_MS = parseInt(process.env.KNOWN_ALERT_COOLDOWN_MS || '300000', 10);
 
-/** True when a face box sits inside a person box (compared on face centre). */
-function faceInsidePerson(faceBox, personBox) {
-  if (!faceBox || !personBox) return false;
-  const cx = faceBox.x + faceBox.width / 2;
-  const cy = faceBox.y + faceBox.height / 2;
-  return (
-    cx >= personBox.x &&
-    cx <= personBox.x + personBox.width &&
-    cy >= personBox.y &&
-    cy <= personBox.y + personBox.height
-  );
-}
-
 /**
- * Replace raw analyzer faces (which carry 128-d embeddings) with identity-
- * annotated ones, mark unrecognised PEOPLE as strangers, tag the result, and
- * broadcast a rate-limited stranger alert. Never lets embeddings reach the DB.
- *
- * Identity is decided per PERSON, not per face: a person counts as known only
- * when a recognised face sits inside their box. Someone facing away — whose face
- * no detector can find — is therefore a stranger rather than being skipped, which
- * is the whole point of the alert. The cost is that a known person who turns
- * their back is briefly flagged too; the alert cooldown keeps that bearable.
+ * Attach identity to the analyzer result, then broadcast a rate-limited alert.
+ * The identity rules themselves live in faceMatch.annotateAnalysis so the
+ * re-analyze route reaches the same verdict; this function only owns the
+ * alerting and its cooldowns. Never lets embeddings reach the DB.
  */
 async function processFaces(cameraId, state, camera, result) {
   const rawFaces = result?.analysis?.faces || [];
-  const persons = result?.analysis?.persons || [];
-  if (rawFaces.length === 0 && persons.length === 0) return;
+  if (rawFaces.length === 0) return; // no face seen — nothing can be judged
   try {
-    const { annotateFaces } = require('./faceMatch');
-    const { faces, knownNames, enrolled } = await annotateFaces(rawFaces);
+    const { annotateAnalysis } = require('./faceMatch');
+    const { faces, knownNames, enrolled, hasStranger, strangerPersons } =
+      await annotateAnalysis(result.analysis);
     result.analysis.faces = faces;
     if (!enrolled) return; // nobody enrolled yet — everyone would be a "stranger"
-
-    const knownFaces = faces.filter((f) => !f.isStranger && f.name);
-    for (const p of persons) {
-      p.isStranger = !knownFaces.some((f) => faceInsidePerson(f.bbox, p.bbox));
-    }
-    const strangerPersons = persons.filter((p) => p.isStranger).length;
-    const hasStranger = strangerPersons > 0 || faces.some((f) => f.isStranger);
 
     const now = Date.now();
     const { broadcast } = require('./sse');

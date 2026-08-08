@@ -16,15 +16,37 @@ export default function EventDetail() {
   const [showOverlay, setShowOverlay] = useState(true);
   const [timeline, setTimeline] = useState([]);
 
+  // Neighbours are fetched RELATIVE to this event's timestamp, not by locating it
+  // inside a fixed page of the newest events. The old approach broke as soon as
+  // the event was older than that page: findIndex returned -1, and `-1 + 1` made
+  // the "next" button jump to the newest event of the camera instead of the
+  // adjacent one. Anchoring on capturedAt also lets you walk the whole history
+  // rather than stopping at the tenth event.
+  const [older, setOlder] = useState(null);   // earlier in time
+  const [newer, setNewer] = useState(null);   // later in time
+
   useEffect(() => {
-    api.getEvent(id).then((ev) => {
+    let cancelled = false;
+    api.getEvent(id).then(async (ev) => {
+      if (cancelled) return;
       setEvent(ev);
-      if (ev.cameraId?._id) {
-        api.getEvents({ cameraId: ev.cameraId._id, limit: 10 }).then((d) => {
-          setTimeline(d.events || []);
-        }).catch(() => {});
-      }
+      const camId = ev.cameraId?._id;
+      if (!camId) { setTimeline([]); setOlder(null); setNewer(null); return; }
+      try {
+        const [olderRes, newerRes] = await Promise.all([
+          api.getEvents({ cameraId: camId, dateTo: ev.capturedAt, limit: 6 }),
+          api.getEvents({ cameraId: camId, dateFrom: ev.capturedAt, limit: 6, sort: 'asc' }),
+        ]);
+        if (cancelled) return;
+        const olderList = (olderRes.events || []).filter((e) => e._id !== ev._id);
+        const newerList = (newerRes.events || []).filter((e) => e._id !== ev._id);
+        setOlder(olderList[0] || null);
+        setNewer(newerList[0] || null);
+        // Newest first, with the current event always present and in the middle.
+        setTimeline([...newerList.slice(0, 5).reverse(), ev, ...olderList.slice(0, 5)]);
+      } catch { /* navigation still works without the side list */ }
     }).catch(() => navigate('/events'));
+    return () => { cancelled = true; };
   }, [id, navigate]);
 
   const handleImgLoad = () => {
@@ -57,19 +79,17 @@ export default function EventDetail() {
     else navigate('/events');
   };
 
+  // Left goes back in time, right goes forward — matching the "trước/sau" labels.
+  // Previously left moved up a newest-first list, i.e. towards NEWER events.
   useEffect(() => {
     const handler = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-      const currentIdx = timeline.findIndex(ev => ev._id === id);
-      if (e.key === 'ArrowLeft' && currentIdx > 0) {
-        navigate(`/events/${timeline[currentIdx - 1]._id}`);
-      } else if (e.key === 'ArrowRight' && currentIdx < timeline.length - 1) {
-        navigate(`/events/${timeline[currentIdx + 1]._id}`);
-      }
+      if (e.key === 'ArrowLeft' && older) navigate(`/events/${older._id}`);
+      else if (e.key === 'ArrowRight' && newer) navigate(`/events/${newer._id}`);
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [id, timeline, navigate]);
+  }, [older, newer, navigate]);
 
   if (!event) {
     return (
@@ -92,10 +112,6 @@ export default function EventDetail() {
     };
     return map[t] || t;
   };
-  const currentIdx = timeline.findIndex(ev => ev._id === id);
-  const prevEvent = currentIdx > 0 ? timeline[currentIdx - 1] : null;
-  const nextEvent = currentIdx < timeline.length - 1 ? timeline[currentIdx + 1] : null;
-
   return (
     <>
       <div className="detail-header">
@@ -103,13 +119,23 @@ export default function EventDetail() {
           <button className="btn" onClick={goBack} aria-label="Quay lại">
             <ArrowLeft size={14} /> Quay lại
           </button>
-          {prevEvent && (
-            <Link to={`/events/${prevEvent._id}`} className="btn btn-sm" aria-label="Sự kiện trước">
+          {older && (
+            <Link
+              to={`/events/${older._id}`}
+              className="btn btn-sm"
+              aria-label="Sự kiện trước đó"
+              title={`Trước đó — ${format(new Date(older.capturedAt), 'HH:mm:ss')}`}
+            >
               <ChevronLeft size={14} />
             </Link>
           )}
-          {nextEvent && (
-            <Link to={`/events/${nextEvent._id}`} className="btn btn-sm" aria-label="Sự kiện sau">
+          {newer && (
+            <Link
+              to={`/events/${newer._id}`}
+              className="btn btn-sm"
+              aria-label="Sự kiện sau đó"
+              title={`Sau đó — ${format(new Date(newer.capturedAt), 'HH:mm:ss')}`}
+            >
               <ChevronRight size={14} />
             </Link>
           )}
