@@ -53,6 +53,38 @@ export default function PlaybackTimeline({
     [events, dayStartMs],
   );
 
+  // Only the playhead moves while a segment plays, but the runs and up to 500
+  // event markers were rebuilt on every tick alongside it. Holding their elements
+  // in memos means a playhead move re-renders one div instead of ~500.
+  const runEls = useMemo(
+    () => runs.map((r, i) => (
+      <div
+        key={`run-${i}`}
+        className="pb-run"
+        style={{ left: pct(r.from), width: pct(r.to - r.from) }}
+        title={`Có dữ liệu ${new Date(dayStartMs + r.from * 1000).toTimeString().slice(0, 5)}–${new Date(dayStartMs + r.to * 1000).toTimeString().slice(0, 5)}`}
+      />
+    )),
+    [runs, dayStartMs],
+  );
+
+  const markerEls = useMemo(
+    () => markers.map((m) => (
+      <div
+        key={m.id}
+        className={`pb-marker ${tagClass(m.tags)}`}
+        style={{ left: pct(m.at) }}
+        title={`${new Date(dayStartMs + m.at * 1000).toTimeString().slice(0, 8)} — ${m.tags.join(', ') || 'sự kiện'}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          // Land slightly before the event so the moment itself is visible.
+          if (onSeek) onSeek(new Date(dayStartMs + Math.max(0, m.at - 5) * 1000));
+        }}
+      />
+    )),
+    [markers, dayStartMs, onSeek],
+  );
+
   const playheadSec = playheadAt == null ? null : offsetSec(playheadAt, dayStartMs);
 
   const seekFromEvent = (clientX) => {
@@ -82,28 +114,8 @@ export default function PlaybackTimeline({
           if (e.key === 'ArrowRight') onSeek(new Date(dayStartMs + (playheadSec + step) * 1000));
         }}
       >
-        {runs.map((r, i) => (
-          <div
-            key={`run-${i}`}
-            className="pb-run"
-            style={{ left: pct(r.from), width: pct(r.to - r.from) }}
-            title={`Có dữ liệu ${new Date(dayStartMs + r.from * 1000).toTimeString().slice(0, 5)}–${new Date(dayStartMs + r.to * 1000).toTimeString().slice(0, 5)}`}
-          />
-        ))}
-
-        {markers.map((m) => (
-          <div
-            key={m.id}
-            className={`pb-marker ${tagClass(m.tags)}`}
-            style={{ left: pct(m.at) }}
-            title={`${new Date(dayStartMs + m.at * 1000).toTimeString().slice(0, 8)} — ${m.tags.join(', ') || 'sự kiện'}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              // Land slightly before the event so the moment itself is visible.
-              if (onSeek) onSeek(new Date(dayStartMs + Math.max(0, m.at - 5) * 1000));
-            }}
-          />
-        ))}
+        {runEls}
+        {markerEls}
 
         {playheadSec != null && playheadSec >= 0 && playheadSec <= DAY_SEC && (
           <div className="pb-playhead" style={{ left: pct(playheadSec) }} />

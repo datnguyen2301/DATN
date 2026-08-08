@@ -24,6 +24,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { AnnexBReassembler } = require('./annexBReassembler');
 
 const STREAMS_DIR = path.join(__dirname, '..', 'streams');
 const BIN_DIR = path.join(__dirname, '..', 'bin');
@@ -90,16 +91,16 @@ function cleanDir(dir) {
   } catch (_) {}
 }
 
-function liveFfmpegArgs() {
+function liveFfmpegArgs(codec) {
   const height = process.env.EZVIZ_STREAM_HEIGHT || '720';
   const bitrate = process.env.EZVIZ_STREAM_BITRATE || '2000k';
 
   return [
     '-v', 'warning',
-    // Raw Annex-B HEVC carries no timestamps and the demuxer assumes 25fps while
+    // Raw Annex-B video carries no timestamps and the demuxer assumes 25fps while
     // the camera sends ~15-20, so stream time would drift from wall time.
     '-use_wallclock_as_timestamps', '1',
-    '-f', 'hevc',
+    '-f', codec,
     '-i', 'pipe:0',
     '-c:v', 'libx264',
     '-preset', 'veryfast',
@@ -123,7 +124,18 @@ function liveFfmpegArgs() {
   ];
 }
 
-function spawnHelper(cameraId, serial) {
+/**
+ * Start the helper for a camera and wire its stdout through the reassembler.
+ *
+ * Consumers read from `state.source`, never the helper directly: for an H.264
+ * device the helper emits RTP fragments that no decoder accepts, so the stream
+ * has to be rebuilt first. The reassembler also reports which codec the device
+ * actually sends, and consumers can only be spawned once that is known — their
+ * ffmpeg needs the matching `-f`. Backpressure holds the video in the transform
+ * until then, so nothing is lost while waiting.
+ */
+function spawnHelper(state) {
+  const { cameraId, serial } = state;
   const vs = spawn(
     binPath(),
     [
@@ -144,22 +156,44 @@ function spawnHelper(cameraId, serial) {
   // Piping into a dead ffmpeg raises EPIPE; expected during teardown.
   vs.stdout.on('error', () => {});
 
+  const source = new AnnexBReassembler();
+  source.on('error', (err) => console.warn(`[ezvizCloud] reassembler error for ${serial}: ${err.message}`));
+  vs.stdout.pipe(source);
+
+  source.once('codec', (codec, meta) => {
+    const cur = active.get(cameraId);
+    if (!cur || cur.stopping || cur.source !== source) return;
+    cur.codec = codec;
+    console.log(
+      `[ezvizCloud] ${serial} sends ${codec}${meta.guessed ? ' (assumed — no parameter set seen)' : ''}`,
+    );
+    for (const [id, c] of cur.consumers) {
+      if (!c.proc) spawnConsumerProc(cur, id, c);
+    }
+  });
+
   vs.on('close', (code) => {
-    const state = active.get(cameraId);
-    if (!state || state.stopping || state.vs !== vs) return;
+    const cur = active.get(cameraId);
+    if (!cur || cur.stopping || cur.vs !== vs) return;
     console.warn(`[ezvizCloud] helper exited (code ${code}) for ${serial}${vsErr ? `: ${vsErr.slice(-300)}` : ''}`);
     // The source is gone; every consumer's ffmpeg will EOF and exit. Tear them
     // down deliberately so the restart respawns a clean set.
-    killConsumerProcs(state);
+    killConsumerProcs(cur);
     scheduleRestart(cameraId);
   });
 
+  state.vs = vs;
+  state.source = source;
+  state.codec = null;
   return vs;
 }
 
-/** Spawn one consumer's ffmpeg and wire the shared helper stdout into it. */
+/** Spawn one consumer's ffmpeg and wire the shared reassembled source into it. */
 function spawnConsumerProc(state, consumerId, consumer) {
-  const spec = consumer.makeSpec();
+  // Deferred until the codec is known; the 'codec' handler spawns the backlog.
+  if (!state.codec) return null;
+
+  const spec = consumer.makeSpec(state.codec);
   consumer.cwd = spec.cwd;
   fs.mkdirSync(spec.cwd, { recursive: true });
 
@@ -176,7 +210,7 @@ function spawnConsumerProc(state, consumerId, consumer) {
     console.warn(`[ezvizCloud] consumer '${consumerId}' ffmpeg exited (code ${code}) for ${cur.serial}${err ? `: ${err.slice(-300)}` : ''}`);
     // ffmpeg died while the source is still alive — respawn just this consumer.
     if (cur.vs && !cur.vs.killed) {
-      try { cur.vs.stdout.unpipe(proc.stdin); } catch (_) {}
+      try { cur.source && cur.source.unpipe(proc.stdin); } catch (_) {}
       spawnConsumerProc(cur, consumerId, c);
     }
   });
@@ -184,14 +218,14 @@ function spawnConsumerProc(state, consumerId, consumer) {
   consumer.proc = proc;
   // Multiple pipe destinations: Node fans out and propagates backpressure, so a
   // slow consumer throttles the source instead of ballooning memory.
-  if (state.vs) state.vs.stdout.pipe(proc.stdin);
+  if (state.source) state.source.pipe(proc.stdin);
   return proc;
 }
 
 function killConsumerProcs(state) {
   for (const c of state.consumers.values()) {
     if (!c.proc) continue;
-    try { state.vs && state.vs.stdout.unpipe(c.proc.stdin); } catch (_) {}
+    try { state.source && state.source.unpipe(c.proc.stdin); } catch (_) {}
     try { c.proc.stdin.end(); } catch (_) {}
     try { c.proc.kill('SIGTERM'); } catch (_) {}
     c.proc = null;
@@ -226,8 +260,9 @@ function scheduleRestart(cameraId) {
   state.restartTimer = setTimeout(() => {
     const cur = active.get(cameraId);
     if (!cur || cur.stopping) return;
-    cur.vs = spawnHelper(cameraId, cur.serial);
-    for (const [id, c] of cur.consumers) spawnConsumerProc(cur, id, c);
+    // Consumers are respawned by the new source's 'codec' event, not here — the
+    // fresh helper re-announces the codec and their ffmpeg depends on it.
+    spawnHelper(cur);
   }, RESTART_DELAY_MS);
 }
 
@@ -273,6 +308,8 @@ function attachConsumer(cameraId, serial, { id, makeSpec, ownsDir = false }) {
       cameraId: camId,
       serial,
       vs: null,
+      source: null,
+      codec: null,
       consumers: new Map(),
       startedAt: new Date(),
       restarts: 0,
@@ -281,7 +318,7 @@ function attachConsumer(cameraId, serial, { id, makeSpec, ownsDir = false }) {
       restartTimer: null,
     };
     active.set(camId, state);
-    state.vs = spawnHelper(camId, serial);
+    spawnHelper(state);
   }
 
   if (state.consumers.has(id)) return state.consumers.get(id);
@@ -310,7 +347,7 @@ function detachConsumer(cameraId, id, { graceMs = 0 } = {}) {
 
   if (consumer.proc) {
     const proc = consumer.proc;
-    try { state.vs && state.vs.stdout.unpipe(proc.stdin); } catch (_) {}
+    try { state.source && state.source.unpipe(proc.stdin); } catch (_) {}
     try { proc.stdin.end(); } catch (_) {}
     if (graceMs > 0) {
       setTimeout(() => { try { proc.kill('SIGTERM'); } catch (_) {} }, graceMs);
@@ -348,8 +385,13 @@ function teardown(cameraId) {
     if (c.proc) { try { c.proc.kill('SIGKILL'); } catch (_) {} }
   }
   if (state.vs) {
+    try { state.vs.stdout.unpipe(state.source); } catch (_) {}
     try { state.vs.kill('SIGTERM'); } catch (_) {}
     try { state.vs.kill('SIGKILL'); } catch (_) {}
+  }
+  if (state.source) {
+    try { state.source.destroy(); } catch (_) {}
+    state.source = null;
   }
   active.delete(camId);
   console.log(`[ezvizCloud] helper stopped for ${state.serial}`);
@@ -369,7 +411,7 @@ async function start(cameraId, serial) {
   attachConsumer(id, serial, {
     id: LIVE_CONSUMER,
     ownsDir: true,
-    makeSpec: () => ({ args: liveFfmpegArgs(), cwd: outDir }),
+    makeSpec: (codec) => ({ args: liveFfmpegArgs(codec), cwd: outDir }),
   });
 
   try {

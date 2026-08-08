@@ -57,6 +57,38 @@ For licence plates, download `LP_detector_nano_61.pt` and `LP_ocr_nano_62.pt` fr
 into `backend/models/`. That project publishes no licence, so its weights are not
 redistributed here — review its terms before use.
 
+### Camera setup — turn OFF video encryption
+
+**EZVIZ cameras ship with Image Encryption enabled, and VisionGuard cannot read
+an encrypted stream. Turn it off before adding the camera.**
+
+> EZVIZ app → your camera → **Settings** → **Image Encryption** → off
+> (you will be asked for the device verify code, printed on the camera's label)
+
+Leave it on and you get a camera that looks online everywhere — the cloud reports
+it, the app shows it — while VisionGuard shows a black player, auto-watch captures
+no frames, and nothing is ever recorded. There is no error message that points at
+encryption, so this is worth checking first whenever a camera "connects but shows
+nothing".
+
+Verify from the command line — `encrypted` must be `false`:
+
+```bash
+cd backend
+python scripts/ezviz_bridge.py rtsp_info '{"serial":"YOUR_SERIAL"}'
+# {"ok": true, "data": {"serial": "...", "localIp": "192.168.1.50",
+#                       "rtspPort": "554", "encrypted": false, ...}}
+```
+
+Reboot the camera after changing the setting — some firmware only applies it at
+boot.
+
+**If port 554 is still refused with encryption off**, that model simply does not
+serve RTSP; EZVIZ removed it from several newer consumer cameras (CS-H1c among
+them). Nothing is broken — leave `rtspHost` empty on that camera and VisionGuard
+streams it over the EZVIZ cloud instead. Local RTSP is only a lower-latency
+shortcut, never a requirement.
+
 ### Configuration
 
 Create `backend/.env` (never commit it):
@@ -75,13 +107,30 @@ EZVIZ_REGION=apiisgp
 
 ## Running
 
-Three terminals:
+Four terminals, all started from the directory shown:
 
 ```bash
-cd backend   && npm run dev                  # API        :5000
-cd frontend  && npm run dev                  # UI         :5173
-cd backend   && python scripts/analyze_server.py   # AI     :5100
+cd backend   && npm run dev                       # API        :5000
+cd frontend  && npm run dev                       # UI         :5173
+cd backend   && python scripts/analyze_server.py  # detection  :5100
+cd backend   && python scripts/ezviz_server.py    # EZVIZ      :5101
 ```
+
+`ezviz_server.py` is optional but keeps one logged-in EZVIZ session alive. Without
+it every cloud call spawns `ezviz_bridge.py` from scratch, which takes 15–30s and
+routinely exceeds the 12s timeout in `services/ezviz.js`.
+
+> **`analyze_server.py` does not read `.env`.** Unlike `ezviz_server.py` it has no
+> `load_dotenv` call, so face tuning variables are ignored when you launch it from
+> a plain shell and silently fall back to defaults — which can switch stranger
+> alerting off without any error. Export them first, or start it through a wrapper
+> that loads the file:
+>
+> ```powershell
+> cd backend
+> $env:FACE_MIN_PX=45; $env:FACE_SCORE_THRESHOLD=0.70
+> python scripts/analyze_server.py
+> ```
 
 Open http://localhost:5173 and register an account.
 
@@ -119,10 +168,30 @@ All optional, set in `backend/.env`:
 | `ANALYZER_WORKERS` | `2` | Parallel detection processes |
 | `FACE_MATCH_THRESHOLD` | `0.45` | Higher = fewer strangers slip through |
 | `FACE_MIN_PX` | `60` | Faces smaller than this aren't identified |
+| `FACE_SCORE_THRESHOLD` | `0.8` | YuNet confidence needed to accept a face |
+| `STRANGER_ALERT_COOLDOWN_MS` | `60000` | Minimum gap between stranger warnings |
 | `WATCH_RECORD_ON_DETECTION` | `false` | Record a clip while a person is present |
+
+The two face gates are worth tuning together against your own camera distance. At
+1280×720 with people 3–4m away, faces measure roughly 45–60px wide and score
+0.79–0.86 — just under both defaults, so every face is discarded and no stranger
+alert ever fires. Lowering them admits those faces, but small crops make weak
+embeddings, so raise `FACE_MATCH_THRESHOLD` alongside or strangers start matching
+enrolled people:
+
+```env
+FACE_MIN_PX=45
+FACE_SCORE_THRESHOLD=0.70
+FACE_MATCH_THRESHOLD=0.60
+```
 
 ## Notes
 
+- Identity is decided per person, not per face. Someone is "known" only when a
+  recognised face sits inside their detection box, so a person facing away counts
+  as a stranger rather than being skipped — the back-turned case is exactly the
+  one worth flagging. The cost is that a known person who turns around is briefly
+  flagged too, which `STRANGER_ALERT_COOLDOWN_MS` keeps tolerable.
 - Faces need roughly 60px to be identified — distant figures are reported as a
   plain person detection rather than guessed at. Measured on a 27-person test
   photo, the defaults re-identified 98% of known faces with no false matches.

@@ -10,6 +10,9 @@ const bboxSchema = new mongoose.Schema({
 const personSchema = new mongoose.Schema({
   confidence: Number,
   bbox: bboxSchema,
+  // True when no RECOGNISED face was found inside this person's box — including
+  // the common case of someone facing away, where no detector can find a face.
+  isStranger: { type: Boolean, default: false },
 }, { _id: false });
 
 const vehicleSchema = new mongoose.Schema({
