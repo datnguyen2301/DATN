@@ -10,6 +10,12 @@ function getFfmpegPath() {
   return process.env.FFMPEG_PATH || 'ffmpeg';
 }
 
+/** Private ranges only — anything else cannot be a camera on this machine's LAN. */
+function onLan(ip) {
+  const s = String(ip || '');
+  return s.startsWith('192.168.') || s.startsWith('10.') || s.startsWith('172.');
+}
+
 function rtspBase(localIp, port, camKey) {
   const p = port || '554';
   if (camKey) {
@@ -18,46 +24,6 @@ function rtspBase(localIp, port, camKey) {
     return `rtsp://${user}:${pass}@${localIp}:${p}`;
   }
   return `rtsp://${localIp}:${p}`;
-}
-
-function buildCandidates({ localIp, rtspPort, camKey }) {
-  const port = rtspPort || '554';
-  const key = String(camKey || '').trim();
-
-  const suffixes = [];
-  // Known-working path first (H.264 main stream)
-  suffixes.push(
-    { type: 'h264_main', path: '/h264/ch1/main/av_stream' },
-    { type: 'h264_sub', path: '/h264/ch1/sub/av_stream' },
-  );
-  // EZVIZ-style paths — only if camKey looks like a channel index
-  if (key && /^\d+$/.test(key)) {
-    suffixes.push(
-      { type: 'ezviz_main', path: `/ch${key}/main/av_stream` },
-      { type: 'ezviz_sub', path: `/ch${key}/sub/av_stream` },
-    );
-  }
-  suffixes.push(
-    { type: 'h265_main', path: '/h265/ch1/main/av_stream' },
-    { type: 'h265_sub', path: '/h265/ch1/sub/av_stream' },
-    { type: 'chan101', path: '/Streaming/Channels/101' },
-    { type: 'chan102', path: '/Streaming/Channels/102' },
-    { type: 'dahua_main', path: '/cam/realmonitor?channel=1&subtype=0' },
-    { type: 'dahua_sub', path: '/cam/realmonitor?channel=1&subtype=1' },
-    { type: 'live', path: '/live' },
-    { type: 'generic_stream', path: '/stream' },
-  );
-
-  const base = rtspBase(localIp, port, key);
-  const seen = new Set();
-  const out = [];
-  for (const { type, path: p } of suffixes) {
-    const url = `${base}${p}`;
-    if (seen.has(url)) continue;
-    seen.add(url);
-    out.push({ type, url });
-  }
-  return out;
 }
 
 function buildFastCandidates({ localIp, rtspPort, camKey }) {
@@ -150,74 +116,11 @@ function tryFfmpegOneFrame(rtspUrl, destPath, timeoutMs, rtspTransport = 'tcp') 
   });
 }
 
-async function tryUrlWithTransports(url, destPath, timeoutMs) {
-  // Sequential: TCP then UDP, both H.264 then H.265 via libx265
-  for (const transport of ['tcp', 'udp']) {
-    const { ok, stderr } = await tryFfmpegOneFrame(url, destPath, timeoutMs, transport);
-    if (ok) return { ok: true, stderr: '' };
-    if (stderr && stderr !== 'timeout') {
-      // Non-timeout error on TCP: likely codec issue, try H.265 software decode
-      const hevcFallback = await tryFfmpegOneFrameH265(url, destPath, timeoutMs, transport);
-      if (hevcFallback.ok) return { ok: true, stderr: '' };
-    }
-  }
-  return { ok: false, stderr: 'all transports failed' };
-}
-
-function tryFfmpegOneFrameH265(rtspUrl, destPath, timeoutMs, rtspTransport = 'tcp') {
-  return new Promise((resolve) => {
-    const ffmpegBin = getFfmpegPath();
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-rtsp_transport', rtspTransport,
-      '-fflags', 'nobuffer',
-      '-flags', 'low_delay',
-      '-max_delay', '5000000',
-      '-i', rtspUrl,
-      '-c:v', 'libx265',
-      '-frames:v', '1',
-      '-q:v', '3',
-      '-y',
-      destPath,
-    ];
-    const proc = spawn(ffmpegBin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-    const timer = setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch (_) {}
-      try { fs.unlinkSync(destPath); } catch (_) {}
-      resolve({ ok: false, stderr: 'h265_timeout' });
-    }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        try { fs.unlinkSync(destPath); } catch (_) {}
-        resolve({ ok: false, stderr });
-        return;
-      }
-      try {
-        const st = fs.statSync(destPath);
-        if (st.size > 0) {
-          resolve({ ok: true, stderr: '' });
-        } else {
-          try { fs.unlinkSync(destPath); } catch (_) {}
-          resolve({ ok: false, stderr: 'h265_empty_output' });
-        }
-      } catch (_) {
-        resolve({ ok: false, stderr });
-      }
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      try { fs.unlinkSync(destPath); } catch (_) {}
-      resolve({ ok: false, stderr: err.message });
-    });
-  });
-}
+// Note: there is deliberately no "H.265 fallback" here. A previous one passed
+// `-c:v libx265` alongside a .jpg output, which sets the OUTPUT encoder rather
+// than the input decoder — JPEG cannot be encoded with libx265, so that path
+// failed every single time it ran. FFmpeg picks the decoder from the stream on
+// its own, so H.265 cameras already work through tryFfmpegOneFrame.
 
 async function captureRtspJpegToFile(camera, destPath, opts = {}) {
   const {
@@ -306,11 +209,8 @@ async function captureRtspJpegToFile(camera, destPath, opts = {}) {
       return true;
     }
 
-    const hasValidPath = streamInfo.localIp &&
-      (streamInfo.localIp.startsWith('192.168.') || streamInfo.localIp.startsWith('10.') || streamInfo.localIp.startsWith('172.'));
-    if (hasValidPath) {
-      console.warn(`[rtspCapture] All parallel candidates failed for "${serial}"`);
-    }
+    console.warn(`[rtspCapture] All parallel candidates failed for "${serial}"${onLan(streamInfo.localIp) ? ''
+      : ` — IP "${streamInfo.localIp}" is not on this machine's LAN`}`);
     return false;
   }
 
@@ -351,13 +251,11 @@ async function captureRtspJpegToFile(camera, destPath, opts = {}) {
     }
   }
 
-  const hasValidPath = streamInfo.localIp &&
-    (streamInfo.localIp.startsWith('192.168.') || streamInfo.localIp.startsWith('10.') || streamInfo.localIp.startsWith('172.'));
-  if (hasValidPath) {
-    console.warn(`[rtspCapture] All ${candidates.length} candidates failed for "${serial}" (IP=${streamInfo.localIp}).`);
+  console.warn(`[rtspCapture] All ${candidates.length} candidates failed for "${serial}" (IP=${streamInfo.localIp}).`);
+  if (onLan(streamInfo.localIp)) {
     console.warn(`[rtspCapture] Suggestions: 1) Verify camera RTSP is enabled in its web UI. 2) Check firewall allows port ${streamInfo.rtspPort || 554}. 3) Confirm verifyCode is correct. 4) Try opening rtsp://${streamInfo.localIp}:${streamInfo.rtspPort || 554} in VLC to validate.`);
   } else {
-    console.warn(`[rtspCapture] All attempts failed for "${serial}" — IP "${streamInfo.localIp}" may not be reachable from this machine.`);
+    console.warn(`[rtspCapture] "${streamInfo.localIp}" is not a private address reachable from here — the camera is probably on another network. Clear the camera's rtspHost and let it stream over the EZVIZ cloud.`);
   }
   return false;
 }
@@ -400,19 +298,6 @@ async function captureFromHlsSegment(cameraId, destPath, timeoutMs = 8000, maxAg
       resolve({ ok: false, stderr: 'segment_stat_failed' });
       return;
     }
-
-    // Also check the m3u8 to know which .ts is the "current" one being written
-    try {
-      const m3u8 = fs.readFileSync(hlsM3u8, 'utf8');
-      const segMatches = m3u8.match(/seg_\d+\.ts/g);
-      if (segMatches && segMatches.length > 0) {
-        const currentTs = segMatches[segMatches.length - 1];
-        const currentTsPath = path.join(outDir, currentTs);
-        if (fs.existsSync(currentTsPath)) {
-          // Use the last segment referenced in the manifest (most recent)
-        }
-      }
-    } catch (_) {}
 
     const args = [
       '-hide_banner',

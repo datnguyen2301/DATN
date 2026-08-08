@@ -23,14 +23,32 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Whitelisted so a client echoing back a whole camera object cannot flip fields
+// it never meant to touch. Saving an edit form with a stale `autoWatch: false`
+// used to stop a running watcher as a side effect, with nothing in the request
+// suggesting that was intended.
+const UPDATABLE_FIELDS = [
+  'name', 'location', 'type', 'ipAddress', 'status', 'verifyCode', 'rtspHost',
+  'autoWatch', 'autoRecord', 'recordingBufferSeconds', 'recordingCooldown',
+  'recordingMaxDuration', 'watchMinConfidence', 'watchMinPersonSize',
+  'watchDetectTargets',
+];
+
 router.put('/:id', async (req, res) => {
   try {
-    const camera = await Camera.findByIdAndUpdate(req.params.id, req.body, {
+    const update = {};
+    for (const key of UPDATABLE_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(req.body, key)) update[key] = req.body[key];
+    }
+
+    const camera = await Camera.findByIdAndUpdate(req.params.id, update, {
       new: true,
       runValidators: true,
     });
     if (!camera) return res.status(404).json({ error: 'Camera not found' });
-    if (camera.autoWatch === false) {
+    // Only react when the request actually carried the flag. Acting on the
+    // stored value would let an unrelated edit stop a running watcher.
+    if (Object.prototype.hasOwnProperty.call(update, 'autoWatch') && camera.autoWatch === false) {
       await watcher.stopWatch(req.params.id);
     }
     // Keep the persisted autoRecord flag and the running recorder in step, the

@@ -79,7 +79,11 @@ router.post('/upload', upload.single('image'), async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { cameraId, dateFrom, dateTo, tag, search, plate, minPersons, hasVehicle, type, page = 1, limit = 20 } = req.query;
+    // `sort=asc` exists so a caller can ask for the events immediately AFTER a
+    // moment. With descending-only order, "the next event after T" would mean
+    // fetching everything newer than T and taking the last row.
+    const { cameraId, dateFrom, dateTo, tag, search, plate, minPersons, hasVehicle, type, sort, page = 1, limit = 20 } = req.query;
+    const sortDir = sort === 'asc' ? 1 : -1;
     const filter = {};
 
     if (cameraId) filter.cameraId = cameraId;
@@ -116,7 +120,10 @@ router.get('/', async (req, res) => {
     const [events, total] = await Promise.all([
       Event.find(filter)
         .populate('cameraId', 'name location')
-        .sort({ capturedAt: -1 })
+        // _id breaks ties so the order is total: events sharing a second would
+        // otherwise come back in an arbitrary order that differs between the
+        // ascending and descending queries, and paging could repeat or skip rows.
+        .sort({ capturedAt: sortDir, _id: sortDir })
         .skip(skip)
         .limit(parseInt(limit)),
       Event.countDocuments(filter),
@@ -166,11 +173,21 @@ router.post('/:id/analyze', async (req, res) => {
 
     const result = await analyzeEventMedia(event);
 
+    // Re-run identity too, using the same rules as the live watcher. Skipping it
+    // left the event claiming "stranger" with no face to back the claim, because
+    // the tag survived while the analysis under it was replaced.
+    const { annotateAnalysis } = require('../services/faceMatch');
+    const { hasStranger, knownNames } = await annotateAnalysis(result.analysis);
+
     event.analysis = result.analysis;
-    const tagKeys = ['person', 'vehicle', 'plate'];
+    // `stranger` and `known-person` are derived, so they are recomputed rather
+    // than preserved — a stale one outlives the evidence that produced it.
+    const tagKeys = ['person', 'vehicle', 'plate', 'stranger', 'known-person'];
     event.tags = [...new Set([
       ...event.tags.filter((t) => !tagKeys.includes(t)),
       ...result.tags,
+      ...(hasStranger ? ['stranger'] : []),
+      ...(knownNames.length > 0 ? ['known-person'] : []),
     ])];
     await event.save();
     await event.populate('cameraId', 'name location');

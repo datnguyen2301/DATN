@@ -191,7 +191,7 @@ async function analyzeEventMedia(event) {
       let tmp;
       try {
         tmp = await extractClipRepresentativeFrame(vp, event.clipDuration);
-        const out = await analyzeImage(tmp);
+        const out = await analyzeImage(tmp, { faces: true });
         return out;
       } catch (err) {
         console.warn('[analyzer] clip frame extract failed:', err.message);
@@ -203,7 +203,10 @@ async function analyzeEventMedia(event) {
     }
   }
   if (!event.imagePath) return fallback();
-  return analyzeImage(path.join(UPLOADS_DIR, event.imagePath));
+  // faces:true — without it a re-analysis returns an empty `faces` array that
+  // overwrites the identity already stored on the event, silently wiping every
+  // stranger box the watcher had found.
+  return analyzeImage(path.join(UPLOADS_DIR, event.imagePath), { faces: true });
 }
 
 module.exports = { analyzeImage, analyzeImageImmediate, analyzeEventMedia, extractFaces, checkHealth };

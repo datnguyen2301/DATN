@@ -187,11 +187,11 @@ FACE_MATCH_THRESHOLD=0.60
 
 ## Notes
 
-- Identity is decided per person, not per face. Someone is "known" only when a
-  recognised face sits inside their detection box, so a person facing away counts
-  as a stranger rather than being skipped — the back-turned case is exactly the
-  one worth flagging. The cost is that a known person who turns around is briefly
-  flagged too, which `STRANGER_ALERT_COOLDOWN_MS` keeps tolerable.
+- A person is flagged as a stranger only when an unrecognised face was actually
+  found inside their detection box. Someone facing away presents no face to judge
+  and stays an ordinary person detection — calling them a stranger on no evidence
+  turned every passer-by into an alert. The stranger box is drawn on the person,
+  not just the face, so the whole figure is highlighted once identity is decided.
 - Faces need roughly 60px to be identified — distant figures are reported as a
   plain person detection rather than guessed at. Measured on a 27-person test
   photo, the defaults re-identified 98% of known faces with no false matches.

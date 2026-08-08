@@ -107,4 +107,68 @@ async function annotateFaces(faces) {
   return { faces: out, hasStranger, knownNames: [...knownNames], enrolled };
 }
 
-module.exports = { annotateFaces, matchEmbedding, getKnownFaces, invalidateCache, cosine, MATCH_THRESHOLD };
+/** True when a face box sits inside a person box (compared on face centre). */
+function faceInsidePerson(faceBox, personBox) {
+  if (!faceBox || !personBox) return false;
+  const cx = faceBox.x + faceBox.width / 2;
+  const cy = faceBox.y + faceBox.height / 2;
+  return (
+    cx >= personBox.x &&
+    cx <= personBox.x + personBox.width &&
+    cy >= personBox.y &&
+    cy <= personBox.y + personBox.height
+  );
+}
+
+/**
+ * Annotate a whole analyzer result in place: identity on the faces, and the
+ * per-person stranger verdict derived from them.
+ *
+ * A person is flagged only when an UNRECOGNISED face was actually found inside
+ * their box. Someone facing away has no face to judge, so they stay an ordinary
+ * person detection rather than being called a stranger on no evidence. A
+ * recognised face wins over an unrecognised one in the same box: with two faces
+ * overlapping, the confident match is the better answer.
+ *
+ * Shared by the watcher's live path and the "re-analyze" route so the two can
+ * never disagree about who counts as a stranger.
+ */
+async function annotateAnalysis(analysis) {
+  const rawFaces = analysis?.faces || [];
+  const persons = analysis?.persons || [];
+  const { faces, knownNames, enrolled } = await annotateFaces(rawFaces);
+
+  if (!enrolled) {
+    // Nobody enrolled yet — everyone would be a "stranger", so judge no one.
+    for (const p of persons) p.isStranger = false;
+    return { faces, persons, knownNames, enrolled, hasStranger: false, strangerPersons: 0 };
+  }
+
+  const knownFaces = faces.filter((f) => !f.isStranger && f.name);
+  const unknownFaces = faces.filter((f) => f.isStranger);
+  for (const p of persons) {
+    const hasKnown = knownFaces.some((f) => faceInsidePerson(f.bbox, p.bbox));
+    const hasUnknown = unknownFaces.some((f) => faceInsidePerson(f.bbox, p.bbox));
+    p.isStranger = hasUnknown && !hasKnown;
+  }
+
+  return {
+    faces,
+    persons,
+    knownNames,
+    enrolled,
+    hasStranger: faces.some((f) => f.isStranger),
+    strangerPersons: persons.filter((p) => p.isStranger).length,
+  };
+}
+
+module.exports = {
+  annotateFaces,
+  annotateAnalysis,
+  faceInsidePerson,
+  matchEmbedding,
+  getKnownFaces,
+  invalidateCache,
+  cosine,
+  MATCH_THRESHOLD,
+};

@@ -5,9 +5,13 @@ function auth(req, res, next) {
     return next();
   }
   const pathOnly = (req.originalUrl || req.url || '').split('?')[0];
+  // Image and stream endpoints that are consumed by <img>/<video> tags, which
+  // cannot attach an Authorization header. Without this exemption those tags get
+  // a 401 and the tile renders its error state forever — which is exactly what
+  // EzvizLiveFrame did on the Dashboard and Cameras pages.
   if (
     req.method === 'GET' &&
-    /^\/api\/ipcam\/(stream|snapshot)\//.test(pathOnly)
+    (/^\/api\/ipcam\/(stream|snapshot)\//.test(pathOnly) || /^\/api\/ezviz\/frame\//.test(pathOnly))
   ) {
     return next();
   }
