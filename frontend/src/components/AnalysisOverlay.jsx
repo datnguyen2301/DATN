@@ -14,8 +14,16 @@ export default function AnalysisOverlay({ analysis, imgWidth, imgHeight, natural
 
   const boxes = [];
 
+  // An unrecognised person is boxed in red even when no face was detected — the
+  // back-turned case is exactly the one worth flagging.
   (analysis.persons || []).forEach((p, i) => {
-    boxes.push({ ...p.bbox, label: `Person ${(p.confidence * 100).toFixed(0)}%`, color: COLORS.person, key: `p${i}` });
+    boxes.push({
+      ...p.bbox,
+      label: p.isStranger ? `NGƯỜI LẠ ${(p.confidence * 100).toFixed(0)}%` : `Person ${(p.confidence * 100).toFixed(0)}%`,
+      color: p.isStranger ? COLORS.stranger : COLORS.person,
+      strokeWidth: p.isStranger ? 3 : 2,
+      key: `p${i}`,
+    });
   });
   (analysis.vehicles || []).forEach((v, i) => {
     boxes.push({ ...v.bbox, label: `${v.type} ${(v.confidence * 100).toFixed(0)}%`, color: COLORS.vehicle, key: `v${i}` });

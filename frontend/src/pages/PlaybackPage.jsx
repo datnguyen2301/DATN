@@ -3,6 +3,7 @@ import { Circle, Square, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api, uploadsUrl } from '../api';
 import { useToast } from '../components/Toast';
 import PlaybackTimeline from '../components/PlaybackTimeline';
+import HlsPlayer from '../components/HlsPlayer';
 import { localDayKey } from '../utils/localDay';
 
 function fmtClock(d) {
@@ -27,9 +28,18 @@ export default function PlaybackPage() {
   const [index, setIndex] = useState(-1);      // which segment is loaded
   const [playheadAt, setPlayheadAt] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [days, setDays] = useState([]);        // which dates actually have footage
+  const [liveUrl, setLiveUrl] = useState('');  // HLS playlist for the side preview
+  const [liveErr, setLiveErr] = useState('');
+  // The page opens on the live view — that is what a surveillance page is for.
+  // Clicking any segment or event switches to the recording.
+  const [mode, setMode] = useState('live');
   const activeItemRef = useRef(null);
 
-  const segments = timeline?.segments || [];
+  // Memoised so the `|| []` fallback does not hand every dependent hook a fresh
+  // array reference on each render, which would defeat the memos below.
+  const segments = useMemo(() => timeline?.segments || [], [timeline]);
+  const dayEvents = useMemo(() => timeline?.events || [], [timeline]);
   const current = index >= 0 ? segments[index] : null;
 
   useEffect(() => {
@@ -44,6 +54,29 @@ export default function PlaybackPage() {
       })
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which days have footage. The backend already exposed this; the page used to
+  // show a bare date input, so picking a day was guesswork — every wrong guess
+  // costs a round-trip to find out the day is empty.
+  useEffect(() => {
+    if (!cameraId) { setDays([]); return; }
+    api.playbackDays(cameraId)
+      .then((r) => setDays(r?.days || []))
+      .catch(() => setDays([]));
+  }, [cameraId, timeline]);
+
+  // Live view beside the recordings. startStream is idempotent — it returns the
+  // running stream's playlist when one is already up.
+  useEffect(() => {
+    if (!cameraId) { setLiveUrl(''); return; }
+    let cancelled = false;
+    setLiveUrl('');
+    setLiveErr('');
+    api.streamStart(cameraId)
+      .then((r) => { if (!cancelled) setLiveUrl(r?.hlsUrl || ''); })
+      .catch((e) => { if (!cancelled) setLiveErr(e.message || 'Không mở được luồng trực tiếp'); });
+    return () => { cancelled = true; };
+  }, [cameraId]);
 
   const loadTimeline = useCallback(async () => {
     if (!cameraId) return;
@@ -111,6 +144,9 @@ export default function PlaybackPage() {
       }
       if (hit.skipped) addToast('Bỏ qua khoảng trống — chuyển tới đoạn tiếp theo', 'info', 2000);
 
+      // Asking to play a moment means leaving the live view.
+      setMode('playback');
+
       const v = videoRef.current;
       if (hit.i !== index) {
         setIndex(hit.i);
@@ -148,11 +184,39 @@ export default function PlaybackPage() {
     }
   }, [index, segments, addToast]);
 
+  // `timeupdate` fires ~4x/s but the clock and the playhead only resolve to whole
+  // seconds, so three of those four renders repaint the identical UI. Dropping the
+  // duplicates cuts the page's render rate during playback by 4x.
   const onTimeUpdate = useCallback(() => {
     const v = videoRef.current;
     if (!v || !current) return;
-    setPlayheadAt(new Date(new Date(current.startedAt).getTime() + v.currentTime * 1000));
+    const at = new Date(current.startedAt).getTime() + v.currentTime * 1000;
+    setPlayheadAt((prev) => (
+      prev && Math.floor(prev.getTime() / 1000) === Math.floor(at / 1000) ? prev : new Date(at)
+    ));
   }, [current]);
+
+  // Events per segment used to be counted inside the render loop — for every
+  // segment, a full scan of the day's events, each comparison allocating three
+  // Date objects. On a full day (288 segments x 500 markers) that is ~430k
+  // allocations, rebuilt on EVERY render including each playhead tick. One
+  // merge pass over pre-converted timestamps, memoised, replaces it.
+  const eventCounts = useMemo(() => {
+    const counts = new Array(segments.length).fill(0);
+    const evTimes = (timeline?.events || [])
+      .map((e) => new Date(e.at).getTime())
+      .sort((a, b) => a - b);
+    if (!segments.length || !evTimes.length) return counts;
+    let j = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const from = new Date(segments[i].startedAt).getTime();
+      const to = new Date(segments[i].endedAt).getTime();
+      while (j < evTimes.length && evTimes[j] < from) j++;
+      let k = j;
+      while (k < evTimes.length && evTimes[k] <= to) { counts[i]++; k++; }
+    }
+    return counts;
+  }, [segments, timeline?.events]);
 
   const toggleRecording = async () => {
     if (!camera) return;
@@ -228,45 +292,99 @@ export default function PlaybackPage() {
       </div>
 
       <div className="card-body">
+        {/* Which days actually hold footage. Without this the date input is a
+            guessing game: every empty day costs a round-trip to discover. */}
+        {days.length > 0 && (
+          <div className="pb-days" role="group" aria-label="Ngày đã ghi hình">
+            {days.map((d) => (
+              <button
+                key={d.day}
+                className={`pb-day${d.day === date ? ' active' : ''}`}
+                onClick={() => setDate(d.day)}
+                title={`${d.segments} đoạn · ${fmtDuration(d.recordedSec)} · ${(d.sizeBytes / 1e9).toFixed(2)}GB`}
+                aria-current={d.day === date}
+              >
+                <span className="pb-day-date">{d.day.slice(5)}</span>
+                <span className="pb-day-meta">{fmtDuration(d.recordedSec)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {loading && <div className="empty-text">Đang tải...</div>}
 
-        {!loading && camera && !camera.autoRecord && segments.length === 0 && (
-          <div className="empty-text">
-            Camera này chưa bật ghi hình liên tục — chưa có gì để xem lại.
-          </div>
-        )}
-
-        {!loading && camera?.autoRecord && segments.length === 0 && (
-          <div className="empty-text">
-            Đang ghi hình, chưa có đoạn nào hoàn tất cho ngày này. Đoạn đang ghi chỉ
-            xuất hiện sau khi kết thúc.
-          </div>
-        )}
-
-        {!loading && segments.length > 0 && (
+        {!loading && camera && (
           <div className="pb-layout">
             <div className="pb-main">
-            <div className="pb-video">
-              <video
-                ref={videoRef}
-                controls
-                playsInline
-                // Recordings are encoded with -an, so there is no audio to lose.
-                // Without `muted` Chrome's autoplay policy rejects the play()
-                // issued from the async loadedmetadata handler, and the video
-                // loads but never starts.
-                muted
-                // Render the first frame immediately so the player shows the
-                // footage instead of a black box before anything is clicked.
-                preload="auto"
-                src={current ? uploadsUrl(current.filePath) : undefined}
-                onEnded={onEnded}
-                onTimeUpdate={onTimeUpdate}
-                style={{ width: '100%', maxHeight: '55vh', background: '#000', display: 'block' }}
-              />
-              <div className="pb-clock">{fmtClock(playheadAt)}</div>
+            <div className="pb-tabs" role="tablist">
+              <button
+                role="tab"
+                aria-selected={mode === 'live'}
+                className={`pb-tab${mode === 'live' ? ' active' : ''}`}
+                onClick={() => setMode('live')}
+              >
+                <span className="pb-tab-dot" aria-hidden />Trực tiếp
+              </button>
+              <button
+                role="tab"
+                aria-selected={mode === 'playback'}
+                className={`pb-tab${mode === 'playback' ? ' active' : ''}`}
+                onClick={() => setMode('playback')}
+                disabled={segments.length === 0}
+              >
+                Xem lại
+              </button>
+              {isRecording && (
+                <span className="pb-rec" title="Đang ghi hình liên tục">
+                  <span className="pb-rec-dot" aria-hidden />REC
+                </span>
+              )}
             </div>
 
+            {/* Both players stay mounted and are toggled with a class rather than
+                unmounted. playAt() attaches a loadedmetadata handler to videoRef
+                the moment a segment is clicked — if the element only mounted after
+                the tab switch, that ref would still be null and the seek lost. */}
+            <div className={`pb-stage${mode === 'live' ? '' : ' hidden'}`}>
+              <div className="pb-video">
+                {liveUrl
+                  ? <HlsPlayer src={liveUrl} style={{ width: '100%', display: 'block' }} />
+                  : <div className="pb-live-empty">{liveErr || 'Đang mở luồng trực tiếp...'}</div>}
+              </div>
+            </div>
+
+            <div className={`pb-stage${mode === 'playback' ? '' : ' hidden'}`}>
+              {segments.length === 0 && (
+                <div className="empty-text">
+                  {camera.autoRecord
+                    ? 'Đang ghi hình, chưa có đoạn nào hoàn tất cho ngày này. Đoạn đang ghi chỉ xuất hiện sau khi kết thúc.'
+                    : 'Camera này chưa bật ghi hình liên tục — chưa có gì để xem lại cho ngày này.'}
+                </div>
+              )}
+              <div className="pb-video" style={segments.length ? undefined : { display: 'none' }}>
+                <video
+                  ref={videoRef}
+                  controls
+                  playsInline
+                  // Recordings are encoded with -an, so there is no audio to lose.
+                  // Without `muted` Chrome's autoplay policy rejects the play()
+                  // issued from the async loadedmetadata handler, and the video
+                  // loads but never starts.
+                  muted
+                  // Render the first frame immediately so the player shows the
+                  // footage instead of a black box before anything is clicked.
+                  preload="auto"
+                  src={current ? uploadsUrl(current.filePath) : undefined}
+                  onEnded={onEnded}
+                  onTimeUpdate={onTimeUpdate}
+                  style={{ width: '100%', maxHeight: '55vh', background: '#000', display: 'block' }}
+                />
+                <div className="pb-clock">{fmtClock(playheadAt)}</div>
+              </div>
+            </div>
+
+            {segments.length > 0 && (
+              <>
             <PlaybackTimeline
               dayStart={timeline.dayStart}
               segments={segments}
@@ -292,21 +410,46 @@ export default function PlaybackPage() {
                 Mới nhất
               </button>
             </div>
+              </>
+            )}
             </div>
 
-            {/* Browsable list of the day's recordings beside the player. The
-                24h bar is precise but unreadable when footage is sparse; this
-                gives every segment a real click target. */}
-            <aside className="pb-side" aria-label="Danh sách đoạn ghi">
+            {/* Live view + browsable list of the day's recordings beside the
+                player. The 24h bar is precise but unreadable when footage is
+                sparse; the list gives every segment a real click target. */}
+            <aside className="pb-side" aria-label="Sự kiện và đoạn ghi">
+              <div className="pb-side-head">
+                Sự kiện ({dayEvents.length})
+              </div>
+              <div className="pb-side-list pb-ev-list">
+                {dayEvents.length === 0 && (
+                  <div className="pb-side-empty">Không có sự kiện nào trong ngày</div>
+                )}
+                {dayEvents.map((e) => (
+                  <button
+                    key={e.id}
+                    className="pb-seg-item"
+                    // Land slightly before the event so the moment itself is visible.
+                    onClick={() => playAt(new Date(new Date(e.at).getTime() - 5000))}
+                  >
+                    <span className="pb-seg-time">{fmtClock(e.at)}</span>
+                    <span className="pb-seg-meta">
+                      {e.tags.includes('stranger') && <span className="pb-ev-stranger">NGƯỜI LẠ · </span>}
+                      {e.persons > 0 && `${e.persons} người`}
+                      {e.persons > 0 && e.vehicles > 0 && ' · '}
+                      {e.vehicles > 0 && `${e.vehicles} xe`}
+                      {e.persons === 0 && e.vehicles === 0 && (e.tags.join(', ') || 'sự kiện')}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
               <div className="pb-side-head">
                 Đoạn ghi ({segments.length})
               </div>
               <div className="pb-side-list">
                 {segments.map((s, i) => {
-                  const evCount = timeline.events.filter((e) => {
-                    const t = new Date(e.at).getTime();
-                    return t >= new Date(s.startedAt).getTime() && t <= new Date(s.endedAt).getTime();
-                  }).length;
+                  const evCount = eventCounts[i];
                   return (
                     <button
                       key={s.id}

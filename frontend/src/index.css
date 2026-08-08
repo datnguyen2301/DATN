@@ -468,7 +468,7 @@ a { text-decoration: none; color: inherit; }
 .page {}
 
 /* ── Camera grid ── */
-.cam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.cam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 
 .cam-feed {
   border-radius: var(--border-radius-lg);
@@ -506,23 +506,23 @@ a { text-decoration: none; color: inherit; }
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 6px 10px;
+  padding: 4px 6px;
   background: linear-gradient(transparent, rgba(0,0,0,0.7));
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 1px;
   z-index: 2;
 }
-.cam-name { font-size: 12px; color: #fff; font-weight: 500; }
-.cam-status { font-size: 11px; display: flex; align-items: center; gap: 4px; font-weight: 500; }
+.cam-name { font-size: 10px; color: #fff; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cam-status { font-size: 9px; display: flex; align-items: center; gap: 3px; font-weight: 500; }
 .cam-status.live { color: #6ee7b7; }
 .cam-status.offline { color: #fca5a5; }
 
 .cam-icon { font-size: 22px; opacity: 0.25; color: #fff; }
 
 .cam-offline-content { text-align: center; }
-.cam-offline-icon { font-size: 20px; color: #fca5a5; opacity: 0.8; }
-.cam-offline-text { font-size: 11px; color: #fca5a5; margin-top: 6px; font-weight: 500; }
+.cam-offline-icon { font-size: 16px; color: #fca5a5; opacity: 0.8; }
+.cam-offline-text { font-size: 9px; color: #fca5a5; margin-top: 4px; font-weight: 500; }
 
 .detection-box { position: absolute; border: 2px solid #6ee7b7; border-radius: 3px; z-index: 1; }
 .det-label { position: absolute; top: -16px; left: 0; font-size: 10px; color: #6ee7b7; background: rgba(0,0,0,0.75); padding: 1px 5px; white-space: nowrap; border-radius: 2px; }
@@ -1415,7 +1415,7 @@ tr:hover td { background: var(--color-background-hover); }
   .content { padding: 14px; }
   .metrics { grid-template-columns: 1fr 1fr; }
   .grid-2 { grid-template-columns: 1fr; }
-  .cam-grid { grid-template-columns: 1fr; }
+  .cam-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
   .detail-body { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .search-row { flex-wrap: wrap; }
@@ -1841,7 +1841,9 @@ tr:hover td { background: var(--color-background-hover); }
   color: var(--color-text-secondary, #94a3b8);
   border-bottom: 1px solid var(--color-border-primary, #2a3446);
 }
-.pb-side-list { max-height: 58vh; overflow-y: auto; }
+/* Shorter than the 55vh player because the live preview now sits above it in
+   the same column; together they should not outgrow the main player. */
+.pb-side-list { max-height: 34vh; overflow-y: auto; }
 .pb-seg-item {
   display: flex; flex-direction: column; gap: 2px;
   width: 100%; padding: 8px 12px; text-align: left;
@@ -1860,4 +1862,67 @@ tr:hover td { background: var(--color-background-hover); }
 @media (max-width: 900px) {
   .pb-layout { grid-template-columns: 1fr; }   /* list drops below the player */
   .pb-side-list { max-height: 240px; }
+}
+
+/* Day strip: which dates actually have footage, so the date input stops being
+   a guessing game. Scrolls horizontally — the API returns up to 60 days. */
+.pb-days {
+  display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px;
+}
+.pb-day {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 10px; cursor: pointer;
+  border: 1px solid var(--color-border-primary, #2a3446);
+  border-radius: var(--border-radius-md);
+  background: var(--color-background-secondary);
+  color: var(--color-text-primary, #e2e8f0);
+}
+.pb-day:hover { background: var(--color-background-hover, #172033); }
+.pb-day.active { border-color: var(--blue, #2563eb); background: var(--blue-muted, #1e3a5f); }
+.pb-day-date { font-family: var(--font-label); font-size: 12px; font-weight: 600; }
+.pb-day-meta { font-size: 10px; color: var(--color-text-secondary, #94a3b8); }
+
+/* Live / playback tabs above the single big video stage. */
+.pb-tabs { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.pb-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px;
+  border: 1px solid var(--color-border-primary, #2a3446);
+  border-radius: var(--border-radius-md);
+  background: var(--color-background-secondary);
+  color: var(--color-text-secondary, #94a3b8);
+}
+.pb-tab:hover:not(:disabled) { background: var(--color-background-hover, #172033); }
+.pb-tab.active {
+  border-color: var(--blue, #2563eb); background: var(--blue-muted, #1e3a5f);
+  color: var(--color-text-primary, #e2e8f0); font-weight: 600;
+}
+.pb-tab:disabled { opacity: 0.45; cursor: not-allowed; }
+.pb-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+/* Hidden rather than unmounted — see the comment in PlaybackPage.jsx. */
+.pb-stage.hidden { display: none; }
+.pb-tabs .pb-rec { margin-left: auto; }
+.pb-live-empty-wrap { background: #000; }
+.pb-live-empty {
+  padding: 80px 12px; text-align: center; font-size: 13px;
+  color: var(--color-text-secondary, #94a3b8); background: #000;
+}
+.pb-side-empty { padding: 14px 12px; font-size: 12px; color: var(--color-text-secondary, #94a3b8); }
+/* Two stacked lists in one column: cap each so both stay reachable. */
+.pb-ev-list { max-height: 26vh; }
+.pb-ev-stranger { color: #ef4444; font-weight: 700; }
+.pb-rec {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-label); font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  color: #ef4444;
+}
+.pb-rec-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #ef4444;
+  animation: pb-rec-pulse 1.4s ease-in-out infinite;
+}
+@keyframes pb-rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+/* Respect users who ask the OS to stop animations. */
+@media (prefers-reduced-motion: reduce) {
+  .pb-rec-dot { animation: none; }
 }

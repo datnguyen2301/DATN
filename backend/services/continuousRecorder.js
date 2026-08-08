@@ -239,7 +239,7 @@ function attachEzviz(state, serial) {
     id: 'record',
     ownsDir: false,
     // Called fresh on every (re)spawn so each run gets its own directory.
-    makeSpec: () => {
+    makeSpec: (codec) => {
       const { runId, runDir } = newRunDir(state.cameraId);
       state.runId = runId;
       state.runDir = runDir;
@@ -249,7 +249,7 @@ function attachEzviz(state, serial) {
         args: [
           '-v', 'warning',
           '-use_wallclock_as_timestamps', '1',
-          '-f', 'hevc',
+          '-f', codec,
           '-i', 'pipe:0',
           ...outputArgs(),
         ],
