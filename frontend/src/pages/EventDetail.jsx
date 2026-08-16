@@ -84,8 +84,9 @@ export default function EventDetail() {
   useEffect(() => {
     const handler = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-      if (e.key === 'ArrowLeft' && older) navigate(`/events/${older._id}`);
-      else if (e.key === 'ArrowRight' && newer) navigate(`/events/${newer._id}`);
+      // replace, for the same reason the chevron links use it.
+      if (e.key === 'ArrowLeft' && older) navigate(`/events/${older._id}`, { replace: true });
+      else if (e.key === 'ArrowRight' && newer) navigate(`/events/${newer._id}`, { replace: true });
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -119,9 +120,14 @@ export default function EventDetail() {
           <button className="btn" onClick={goBack} aria-label="Quay lại">
             <ArrowLeft size={14} /> Quay lại
           </button>
+          {/* replace: stepping between events must not pile up history entries.
+              Otherwise "Quay lại" walks back through every event you looked at
+              instead of returning to the list you came from — which is why the
+              button behaved differently depending on how you got here. */}
           {older && (
             <Link
               to={`/events/${older._id}`}
+              replace
               className="btn btn-sm"
               aria-label="Sự kiện trước đó"
               title={`Trước đó — ${format(new Date(older.capturedAt), 'HH:mm:ss')}`}
@@ -132,6 +138,7 @@ export default function EventDetail() {
           {newer && (
             <Link
               to={`/events/${newer._id}`}
+              replace
               className="btn btn-sm"
               aria-label="Sự kiện sau đó"
               title={`Sau đó — ${format(new Date(newer.capturedAt), 'HH:mm:ss')}`}

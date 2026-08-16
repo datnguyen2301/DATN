@@ -11,7 +11,6 @@ const { analyzeImage, analyzeEventMedia } = require('./analyzer');
 const { captureRtspJpegToFile, captureFromHlsSegment } = require('./rtspCapture');
 const ezviz = require('./ezviz');
 const { isIpWebcamAddress, isEzvizSerialAddress } = require('../utils/cameraAddress');
-const { getBuffer, STOP_SIGNAL } = require('./ringBuffer');
 const {
   startStreamBridge,
   stopStreamBridge,
@@ -27,6 +26,10 @@ const CLIPS_DIR = path.join(UPLOADS_DIR, 'clips');
 const COOLDOWN_MS = 3000;
 const DETECT_INTERVAL_MS = 1500;
 
+// Sentinel marking a watcher state as stopped. Identity comparison only, so a
+// freshly created state (`stopped: undefined`) never matches.
+const STOP_SIGNAL = {};
+
 // When false (default), the watcher still captures, analyzes, and saves detection
 // snapshots, but does NOT auto-record a video clip while a person/vehicle is
 // present. Set WATCH_RECORD_ON_DETECTION=true to re-enable presence-triggered
@@ -36,7 +39,6 @@ const RECORD_ON_DETECTION =
   String(process.env.WATCH_RECORD_ON_DETECTION ?? 'false').trim().toLowerCase() === 'true';
 
 // ── Recording constants (optimized) ────────────────────────────────────────
-const CLIP_BEFORE_SEC = 10;
 const MAX_CLIP_DURATION_SEC = 30;
 const RECORDING_COOLDOWN_SEC = 8;
 const RECORDING_MAX_IDLE_CYCLES = 10;
@@ -935,9 +937,9 @@ async function processFaces(cameraId, state, camera, result) {
   if (rawFaces.length === 0) return; // no face seen — nothing can be judged
   try {
     const { annotateAnalysis } = require('./faceMatch');
-    const { faces, knownNames, enrolled, hasStranger, strangerPersons } =
+    // annotateAnalysis writes the annotated faces back into result.analysis.
+    const { knownNames, enrolled, hasStranger, strangerPersons } =
       await annotateAnalysis(result.analysis);
-    result.analysis.faces = faces;
     if (!enrolled) return; // nobody enrolled yet — everyone would be a "stranger"
 
     const now = Date.now();
@@ -1027,7 +1029,6 @@ async function ezvizWatchCycle(cameraId) {
 
     console.log(`[watcher] [${cameraId}] EZVIZ cycle #${cycleNum} — frame captured (${frameBuf.length} bytes, ${captureMs}ms)`);
     const entry = { buffer: frameBuf, ts: performance.now() };
-    state.ringBuffer.push(entry);
     state.lastFrameAt = Date.now();
 
     if (state.isRecording) {
@@ -1103,13 +1104,11 @@ async function ezvizWatchCycle(cameraId) {
           await saveSnapshotEvent(cameraId, state, camera, frameBuf, result);
         } else {
           console.log(`[watcher] [${cameraId}] Detection found — starting recording + saving snapshot`);
-          const preFrames = state.ringBuffer.getRecent(CLIP_BEFORE_SEC);
-
           state.isRecording = true;
           state.recordingStart = new Date();
           state.recordingStartTs = performance.now();
           state.lastDetectionAt = performance.now();
-          state.pendingFrames = [...preFrames, entry];
+          state.pendingFrames = [entry];
           state.pendingTags = [...detections];
           state.recordedTags = [];
           state.lastAnalysis = result.analysis || {};
@@ -1178,7 +1177,6 @@ async function unifiedWatchCycle(cameraId) {
     }
 
     const entry = { buffer: frameBuf, ts: performance.now() };
-    state.ringBuffer.push(entry);
     state.lastFrameAt = Date.now();
 
     if (state.isRecording) {
@@ -1263,13 +1261,11 @@ async function unifiedWatchCycle(cameraId) {
         return;
       }
       console.log(`[watcher] [${cameraId}] Detection found — starting recording`);
-      const preFrames = state.ringBuffer.getRecent(CLIP_BEFORE_SEC);
-
       state.isRecording = true;
       state.recordingStart = new Date();
       state.recordingStartTs = performance.now();
       state.lastDetectionAt = performance.now();
-      state.pendingFrames = [...preFrames, entry];
+      state.pendingFrames = [entry];
       state.pendingTags = [...detections];
       state.recordedTags = [];
       state.lastAnalysis = result.analysis || {};
@@ -1413,11 +1409,8 @@ async function startWatch(cameraId, opts = {}) {
 
   const useIpWebcam = isIpWebcamAddress(camera.ipAddress);
 
-  const buf = getBuffer(cameraId, { fps: 5, bufferSeconds: 30 });
-
   const state = {
     camera,
-    ringBuffer: buf,
     startedAt: new Date(),
     stopped: undefined,
     isRecording: false,

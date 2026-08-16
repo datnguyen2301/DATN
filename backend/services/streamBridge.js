@@ -3,7 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const ezviz = require('./ezviz');
-const { getBuffer, removeBuffer, STOP_SIGNAL } = require('./ringBuffer');
+
+// Sentinel marking a stream as stopped. Identity comparison only, so a freshly
+// created state (`stopped: undefined`) never matches.
+const STOP_SIGNAL = {};
 
 const FFMPEG_INTERVAL_MS = 200;
 const CAPTURE_TIMEOUT_MS = 8000;
@@ -179,15 +182,11 @@ function startStreamBridge(cameraId, camera) {
   const extractAndPush = async () => {
     if (state.stopped === STOP_SIGNAL) return;
 
-    const buf = getBuffer(cameraId);
-    if (buf && buf.stopped === STOP_SIGNAL) return;
-
     try {
       const result = await captureRtspFrame(camera, tmpPath, FRAME_EXTRACT_TIMEOUT_MS);
       if (result.ok && fs.existsSync(tmpPath)) {
         const frameBuf = fs.readFileSync(tmpPath);
         if (frameBuf.length > 0) {
-          if (buf) buf.push(frameBuf);
           state.framesExtracted++;
           state.lastFrameAt = Date.now();
         }
@@ -219,7 +218,6 @@ async function stopStreamBridge(cameraId) {
   }
 
   activeStreams.delete(cameraId);
-  removeBuffer(cameraId);
   console.log(`[streamBridge] Stopped for camera ${cameraId}`);
   return { stopped: true };
 }
@@ -242,16 +240,11 @@ function getStreamStatus() {
   return out;
 }
 
-function getBufferForCamera(cameraId) {
-  return getBuffer(cameraId) || null;
-}
-
 module.exports = {
   startStreamBridge,
   stopStreamBridge,
   isStreaming,
   getStreamStatus,
-  getBufferForCamera,
   captureRtspFrame,
   FFMPEG_INTERVAL_MS,
 };

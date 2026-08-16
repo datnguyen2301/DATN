@@ -137,6 +137,11 @@ async function annotateAnalysis(analysis) {
   const rawFaces = analysis?.faces || [];
   const persons = analysis?.persons || [];
   const { faces, knownNames, enrolled } = await annotateFaces(rawFaces);
+  // Write the annotated faces back, or the caller keeps the RAW ones: they still
+  // carry embeddings and none of the identity fields, so persisting them yields
+  // faces with no name and isStranger=false — drawn as calm green "Khuôn mặt"
+  // boxes even inside a person the same pass had just flagged as a stranger.
+  if (analysis) analysis.faces = faces;
 
   if (!enrolled) {
     // Nobody enrolled yet — everyone would be a "stranger", so judge no one.

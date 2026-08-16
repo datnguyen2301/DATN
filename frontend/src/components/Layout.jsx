@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate, useLocation, useNavigationType } from 'react-router-dom';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 import { vi } from 'date-fns/locale';
@@ -6,12 +6,10 @@ import {
   LayoutDashboard,
   Clock,
   History,
-  Search,
   RectangleHorizontal,
   ScanFace,
   UserRound,
   Settings,
-  Plus,
   Moon,
   Sun,
   Menu,
@@ -22,9 +20,9 @@ import { useToast } from './Toast';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Camera trực tiếp' },
+  // Tra cứu was merged into this page: the search/filter controls now live here.
   { to: '/events', icon: Clock, label: 'Sự kiện' },
   { to: '/playback', icon: History, label: 'Xem lại' },
-  { to: '/search', icon: Search, label: 'Tra cứu' },
   { to: '/plates', icon: RectangleHorizontal, label: 'Biển số xe' },
   { to: '/faces', icon: ScanFace, label: 'Khuôn mặt' },
 ];
@@ -59,6 +57,44 @@ export default function Layout() {
   const [currentUser, setCurrentUser] = useState(null);
   const lastEventRef = useRef(null);
   const sidebarRef = useRef(null);
+
+  // ── Scroll restoration ──
+  // The page does not scroll the document: .app-shell is height:100vh with
+  // overflow hidden, and .main-area is the real scroller. Browsers only restore
+  // scroll for the document scroller, so going back always landed at the top of
+  // a list. React Router's <ScrollRestoration> is no help either — it needs a
+  // data router, and this app uses BrowserRouter. So keep the positions here,
+  // keyed by history entry, and put them back on a POP (back/forward).
+  const mainRef = useRef(null);
+  const navType = useNavigationType();
+  const scrollPositions = useRef(new Map());
+
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el) return undefined;
+    const key = location.key;
+    const store = scrollPositions.current;
+    const onScroll = () => { store.set(key, el.scrollTop); };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      // Record where we left this entry before the next one takes over.
+      store.set(key, el.scrollTop);
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, [location.key]);
+
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el) return;
+    const saved = scrollPositions.current.get(location.key);
+    // A fresh navigation starts at the top; back/forward returns to where the
+    // user actually was. Two frames: the restored page has to paint its list
+    // before the container is tall enough to scroll.
+    const target = navType === 'POP' && typeof saved === 'number' ? saved : 0;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => { el.scrollTop = target; });
+    });
+  }, [location.key, navType]);
   const sidebarLogoRef = useRef(null);
   const logoTextRef = useRef(null);
   const logoSubRef = useRef(null);
@@ -203,7 +239,7 @@ export default function Layout() {
         </div>
       </aside>
 
-      <div className="main-area">
+      <div className="main-area" ref={mainRef}>
         <header className="topbar">
           <button className="hamburger" onClick={() => setMobileOpen(true)} aria-label="Mở menu">
             <Menu size={20} />
@@ -217,8 +253,8 @@ export default function Layout() {
               {dark ? <Sun size={14} /> : <Moon size={14} />}
             </button>
             <button className="btn" aria-label="Xuất báo cáo">Xuất báo cáo</button>
-            <button className="btn btn-primary" onClick={() => navigate('/cameras')} aria-label="Thêm camera">
-              <Plus size={14} /> Thêm camera
+            <button className="btn btn-primary" onClick={() => navigate('/cameras')} aria-label="Camera">
+              Camera
             </button>
           </div>
         </header>

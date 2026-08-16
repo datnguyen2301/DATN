@@ -4,9 +4,16 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const sharp = require('sharp');
 const Event = require('../models/Event');
+const Camera = require('../models/Camera');
 const { analyzeImage, analyzeEventMedia } = require('../services/analyzer');
 
 const router = express.Router();
+
+// User input goes straight into a RegExp, so metacharacters must be neutered —
+// otherwise a plate like "51F-*" throws, and "(.*)+" is a ReDoS waiting to fire.
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 const storage = multer.diskStorage({
   destination: path.join(__dirname, '..', 'uploads'),
@@ -93,9 +100,31 @@ router.get('/', async (req, res) => {
       if (dateTo) filter.capturedAt.$lte = new Date(dateTo);
     }
     if (tag) filter.tags = tag;
-    if (search) filter.$text = { $search: search };
     if (plate) {
-      filter['analysis.licensePlates.plateNumber'] = { $regex: plate, $options: 'i' };
+      filter['analysis.licensePlates.plateNumber'] = { $regex: escapeRegex(plate), $options: 'i' };
+    }
+
+    // Each entry is an independent OR-group; they are ANDed together at the end.
+    // Collecting them here instead of assigning filter.$or directly matters
+    // because both `search` and `type=clip` need an $or and the second would
+    // silently overwrite the first.
+    const andGroups = [];
+
+    // Free-text box. The old implementation used the {tags, notes} text index
+    // AND-ed with a plate regex on the same string, so a row had to match both —
+    // which essentially nothing ever did. Search now spans every field a user
+    // would plausibly type: plate, recognised face name, tag, note, camera name.
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      const or = [
+        { 'analysis.licensePlates.plateNumber': rx },
+        { 'analysis.faces.name': rx },
+        { tags: rx },
+        { notes: rx },
+      ];
+      const camIds = await Camera.distinct('_id', { name: rx });
+      if (camIds.length) or.push({ cameraId: { $in: camIds } });
+      andGroups.push({ $or: or });
     }
     if (minPersons) {
       filter[`analysis.persons.${parseInt(minPersons) - 1}`] = { $exists: true };
@@ -107,14 +136,17 @@ router.get('/', async (req, res) => {
       filter.videoPath = { $exists: false };
       filter.type = { $ne: 'clip' };
     } else if (type === 'clip') {
-      filter.$or = [
-        { type: 'clip' },
-        { videoPath: { $regex: /\.(mp4|gif|webm|avi|mov)$/i } },
-      ];
+      andGroups.push({
+        $or: [
+          { type: 'clip' },
+          { videoPath: { $regex: /\.(mp4|gif|webm|avi|mov)$/i } },
+        ],
+      });
     }
     // type=all: lấy tất cả (image + video), không lọc theo type
 
-    const baseFilter = { ...filter };
+    if (andGroups.length) filter.$and = andGroups;
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [events, total] = await Promise.all([

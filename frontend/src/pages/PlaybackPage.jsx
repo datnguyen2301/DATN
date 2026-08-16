@@ -38,6 +38,11 @@ export default function PlaybackPage() {
 
   // Memoised so the `|| []` fallback does not hand every dependent hook a fresh
   // array reference on each render, which would defeat the memos below.
+  // Mirror of `timeline` for callbacks that must read it without taking it as a
+  // dependency (refreshTimeline would otherwise be rebuilt on every poll).
+  const timelineRef = useRef(null);
+  useEffect(() => { timelineRef.current = timeline; }, [timeline]);
+
   const segments = useMemo(() => timeline?.segments || [], [timeline]);
   const dayEvents = useMemo(() => timeline?.events || [], [timeline]);
   const current = index >= 0 ? segments[index] : null;
@@ -102,6 +107,24 @@ export default function PlaybackPage() {
   }, [cameraId, date, addToast]);
 
   useEffect(() => { loadTimeline(); }, [loadTimeline]);
+
+  /**
+   * Refetch the day without disturbing playback — no spinner, and the selected
+   * segment is kept by id rather than index, since a new segment shifts indices.
+   * Returns the segment count so a caller can tell when a new one has landed.
+   */
+  const refreshTimeline = useCallback(async () => {
+    if (!cameraId) return 0;
+    const t = await api.playbackTimeline(cameraId, date);
+    setTimeline(t);
+    setIndex((prev) => {
+      const currentId = timelineRef.current?.segments?.[prev]?.id;
+      if (currentId == null) return prev;
+      const moved = t.segments.findIndex((s) => s.id === currentId);
+      return moved >= 0 ? moved : prev;
+    });
+    return t.segments.length;
+  }, [cameraId, date]);
 
   // Keep the playing segment visible in the side list as playback auto-advances,
   // otherwise the highlight scrolls out of view on a long day.
@@ -230,6 +253,34 @@ export default function PlaybackPage() {
       );
       setTimeline((t) => (t ? { ...t, recording: r.recording } : t));
       addToast(r.autoRecord ? 'Đã bật ghi hình liên tục' : 'Đã tắt ghi hình liên tục', 'success');
+
+      if (r.recording) {
+        await refreshTimeline().catch(() => {});
+        return;
+      }
+
+      // Stopping does not produce the segment straight away: ffmpeg has to close
+      // the file and write its moov, and the recorder only indexes the result in
+      // a sweep 9s later (continuousRecorder.stop). A single refetch here would
+      // still show the old list — which is why the new segment used to appear
+      // only after leaving the page and coming back. Poll until it lands.
+      if (date !== localDayKey(new Date())) {
+        await refreshTimeline().catch(() => {});
+        return;
+      }
+      const before = timelineRef.current?.segments?.length ?? 0;
+      addToast('Đang hoàn tất đoạn ghi cuối...', 'info', 4000);
+      // 15 x 2s matches the recorder's post-stop sweep window, so the UI keeps
+      // watching for exactly as long as the backend keeps trying to index.
+      for (let i = 0; i < 15; i++) {
+        await new Promise((res) => setTimeout(res, 2000));
+        const count = await refreshTimeline().catch(() => before);
+        if (count > before) {
+          addToast('Đoạn ghi mới đã sẵn sàng', 'success');
+          return;
+        }
+      }
+      addToast('Chưa thấy đoạn ghi mới — thử tải lại trang', 'warning');
     } catch (e) {
       addToast(`Lỗi: ${e.message}`, 'error');
     } finally {
