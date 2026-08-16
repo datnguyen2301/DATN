@@ -6,12 +6,10 @@ import {
   LayoutDashboard,
   Clock,
   History,
-  Search,
   RectangleHorizontal,
   ScanFace,
   UserRound,
   Settings,
-  Plus,
   Moon,
   Sun,
   Menu,
@@ -22,9 +20,9 @@ import { useToast } from './Toast';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Camera trực tiếp' },
+  // Tra cứu was merged into this page: the search/filter controls now live here.
   { to: '/events', icon: Clock, label: 'Sự kiện' },
   { to: '/playback', icon: History, label: 'Xem lại' },
-  { to: '/search', icon: Search, label: 'Tra cứu' },
   { to: '/plates', icon: RectangleHorizontal, label: 'Biển số xe' },
   { to: '/faces', icon: ScanFace, label: 'Khuôn mặt' },
 ];
@@ -255,8 +253,8 @@ export default function Layout() {
               {dark ? <Sun size={14} /> : <Moon size={14} />}
             </button>
             <button className="btn" aria-label="Xuất báo cáo">Xuất báo cáo</button>
-            <button className="btn btn-primary" onClick={() => navigate('/cameras')} aria-label="Thêm camera">
-              <Plus size={14} /> Thêm camera
+            <button className="btn btn-primary" onClick={() => navigate('/cameras')} aria-label="Camera">
+              Camera
             </button>
           </div>
         </header>

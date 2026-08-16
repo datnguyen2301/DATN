@@ -224,22 +224,33 @@ export default function Cameras() {
     return () => es.close();
   }, []);
 
+  // These rethrow on failure: CameraForm awaits them and renders the message
+  // inline, keeping the panel open with the user's input intact. Swallowing the
+  // error here made a failed save look like nothing had happened at all.
   const handleCreate = async (data) => {
-    await api.createCamera(data);
+    const cam = await api.createCamera(data);
     setShowForm(false);
+    addToast(`Đã thêm camera ${cam?.name || data.name}`, 'success');
     load();
   };
 
   const handleUpdate = async (data) => {
-    await api.updateCamera(editing._id, data);
+    const cam = await api.updateCamera(editing._id, data);
     setEditing(null);
+    addToast(`Đã lưu camera ${cam?.name || data.name}`, 'success');
     load();
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('Delete this camera?')) return;
-    await api.deleteCamera(id);
-    load();
+    const cam = cameras.find((c) => c._id === id);
+    if (!confirm(`Xóa camera ${cam?.name || ''}?`)) return;
+    try {
+      await api.deleteCamera(id);
+      addToast('Đã xóa camera', 'success');
+      load();
+    } catch (err) {
+      addToast(`Xóa thất bại: ${err.message}`, 'error');
+    }
   };
 
   const handleSync = async () => {
@@ -327,7 +338,7 @@ export default function Cameras() {
             <RefreshCw size={16} className={syncing ? 'spin' : ''} /> Sync EZVIZ
           </button>
           <button className="btn btn-primary" onClick={() => { setShowForm(true); setEditing(null); }}>
-            <Plus size={16} /> Add Camera
+            <Plus size={16} /> Thêm camera
           </button>
         </div>
       </div>
@@ -394,20 +405,20 @@ export default function Cameras() {
 
       {(showForm && !editing) && (
         <div className="form-panel">
-          <h3>New Camera</h3>
+          <h3>Camera mới</h3>
           <CameraForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />
         </div>
       )}
 
       {editing && (
         <div className="form-panel">
-          <h3>Edit Camera</h3>
+          <h3>Sửa camera</h3>
           <CameraForm initial={editing} onSubmit={handleUpdate} onCancel={() => setEditing(null)} />
         </div>
       )}
 
       {cameras.length === 0 ? (
-        <p className="empty-text">No cameras yet. Add one or sync from EZVIZ.</p>
+        <p className="empty-text">Chưa có camera nào. Thêm mới hoặc đồng bộ từ EZVIZ.</p>
       ) : (
         <div className="camera-list">
           {cameras.map((cam) => {
@@ -444,10 +455,8 @@ export default function Cameras() {
                     <div className="camera-preview" style={{ marginTop: 8 }}>
                       <HlsPlayer
                         src={hlsStreams[sid]}
-                        recordable
                         detectOverlay
-                        recordLabel={cam.name?.replace(/[^\w-]+/g, '_') || 'camera'}
-                        style={{ width: '100%' }}
+                        style={{ width: '100%', height: 320 }}
                       />
                     </div>
                   )}
@@ -569,7 +578,7 @@ export default function Cameras() {
                       ) : (
                         <Play size={14} />
                       )}
-                      {hlsActive ? ' Stop' : ' HLS'}
+                      {hlsActive ? ' Stop' : ' PLAY'}
                     </button>
                   )}
                   <button className="btn btn-sm" onClick={() => { setEditing(cam); setShowForm(false); }}><Pencil size={14} /></button>

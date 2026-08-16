@@ -14,7 +14,6 @@ const EventDetail = lazy(() => import('./pages/EventDetail'));
 const Cameras = lazy(() => import('./pages/Cameras'));
 const PlaybackPage = lazy(() => import('./pages/PlaybackPage'));
 const UploadPage = lazy(() => import('./pages/UploadPage'));
-const SearchPage = lazy(() => import('./pages/SearchPage'));
 const PlatesPage = lazy(() => import('./pages/PlatesPage'));
 const FacesPage = lazy(() => import('./pages/FacesPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
@@ -61,7 +60,9 @@ export default function App() {
                 <Route path="cameras" element={<Cameras />} />
                 <Route path="playback" element={<PlaybackPage />} />
                 <Route path="upload" element={<UploadPage />} />
-                <Route path="search" element={<SearchPage />} />
+                {/* Tra cứu merged into Sự kiện — keep the old path working for
+                    bookmarks and any link still pointing at it. */}
+                <Route path="search" element={<Navigate to="/events" replace />} />
                 <Route path="plates" element={<PlatesPage />} />
                 <Route path="faces" element={<FacesPage />} />
                 <Route path="settings" element={<SettingsPage />} />

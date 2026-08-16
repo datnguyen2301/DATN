@@ -306,9 +306,7 @@ export default function Dashboard() {
           <HlsPlayer
             src={hlsStreams[fullscreenCam._id]}
             detectOverlay
-            recordable
-            recordLabel={fullscreenCam.name?.replace(/[^\w-]+/g, '_') || 'camera'}
-            style={{ width: '100%', maxHeight: '80vh' }}
+            style={{ width: '100%', height: 320, maxHeight: '80vh' }}
           />
         ) : fullscreenCam && fullscreenCam.ipAddress && fullscreenCam.status === 'online' && isIpWebcamCamera(fullscreenCam) ? (
           <img
